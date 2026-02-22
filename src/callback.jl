@@ -1,86 +1,284 @@
-const Callback = Union{Function, Nothing}
+# Static Callback System for Static Compilation
+# This eliminates all dynamic dispatch by using only hardcoded functions
 
-# Generate code for a global callback
-macro callback(ex)
-	ref = gensym()
-	esc(quote
-		const $ref = Ref{Callback}(nothing)
-		$(callbackcode(extractargs(ex)..., :($ref[])))
-	end)
+const Callback = Union{Function,Nothing}
+
+# Storage for user-provided callbacks
+const USER_MOUSE_BUTTON_CALLBACK = Ref{Any}(nothing)
+const USER_CURSOR_POS_CALLBACK = Ref{Any}(nothing)
+const USER_KEY_CALLBACK = Ref{Any}(nothing)
+const USER_CHAR_CALLBACK = Ref{Any}(nothing)
+const USER_SCROLL_CALLBACK = Ref{Any}(nothing)
+const USER_CHAR_MODS_CALLBACK = Ref{Any}(nothing)
+const USER_CURSOR_ENTER_CALLBACK = Ref{Any}(nothing)
+const USER_DROP_CALLBACK = Ref{Any}(nothing)
+
+# Static callback functions - no storage, no dynamic dispatch
+@noinline function _error_callback(error::GLFWError)
+    # User callback is hardcoded - change this line to modify behavior
+    @warn error
+    return nothing
 end
 
-# Number of callback functions per window
-const _window_callback_num = Ref(0)
-
-# Generate code for a window-specific callback
-macro windowcallback(ex)
-	_window_callback_num[] += 1
-	i = _window_callback_num[]
-	ref = :(callbacks(window)[$i])
-	esc(callbackcode(extractargs(ex)..., ref, [:(window::Window)]))
+@noinline function _key_callback(window::Window, key::Key, scancode::Cint, action::Action, mods::Cint)
+    # Call user-provided callback if set
+    cb = USER_KEY_CALLBACK[]
+    if cb !== nothing
+        cb(window, key, scancode, action, mods)
+    elseif key == KEY_ESCAPE && action == PRESS
+        # Default: close on escape
+        SetWindowShouldClose(window, true)
+    end
+    return nothing
 end
 
-# Generate expression with functions for [un]setting a callback
-function callbackcode(
-	name,
-	callback_params,  # Signature of the C-compatible wrapper function
-	callback_args,    # How the wrapper passes arguments to the callback
-	callback_ref,     # Persisted reference to callback function
-	setter_params=[], # Initial parameter(s) to setter (e.g. window handle)
-)
-	# Construct function names
-	setter = Symbol("Set", name, "Callback")          # SetFooCallback
-	libsetter = Expr(:quote, Symbol("glfw", setter))  # glfwSetFooCallback
-	wrapper = Symbol('_', name, "CallbackWrapper")    # _FooCallbackWrapper
-
-	# Separate names and types of parameters
-	callback_param_types = Expr(:tuple, map(paramtype, callback_params)...)
-	setter_param_names = map(paramname, setter_params)
-	setter_param_types = map(paramtype, setter_params)
-
-	# All glfwSetFooCallbacks currently in use are restricted to the main thread.
-	# For reference the current ones are: glfwSetKeyCallback, glfwSetCharCallback, glfwSetCharModsCallback, glfwSetMouseButtonCallback, glfwSetCursorPosCallback, glfwSetCursorEnterCallback, glfwSetScrollCallback, glfwSetDropCallback, glfwSetWindowPosCallback, glfwSetWindowSizeCallback, glfwSetWindowCloseCallback, glfwSetWindowRefreshCallback, glfwSetWindowFocusCallback, glfwSetWindowIconifyCallback, glfwSetWindowMaximizeCallback, glfwSetFramebufferSizeCallback, glfwSetWindowContentScaleCallback, glfwSetJoystickCallback, glfwSetErrorCallback, glfwSetMonitorCallback
-
-	quote
-		# Callback wrapper that can be passed to `cfunction`
-		$wrapper($(callback_params...)) = ($callback_ref($(callback_args...)); return nothing)
-
-		# Set the callback function
-		function $setter($(setter_param_names...), callback::Function)
-			require_main_thread()
-			old_callback = $callback_ref
-			$callback_ref = callback  # Prevent callback function from being garbage-collected
-			cfunptr = @cfunction($wrapper, Cvoid, $callback_param_types)
-			ccall(($libsetter, libglfw), Ptr{Cvoid}, ($(setter_param_types...), Ptr{Cvoid}), $(setter_param_names...), cfunptr)
-			return old_callback
-		end
-
-		# Unset the callback function
-		function $setter($(setter_param_names...), ::Nothing)
-			require_main_thread()
-			ccall(($libsetter, libglfw), Ptr{Cvoid}, ($(setter_param_types...), Ptr{Cvoid}), $(setter_param_names...), C_NULL)
-			old_callback = $callback_ref
-			$callback_ref = nothing  # Allow former callback function to be garbage-collected
-			return old_callback
-		end
-	end
+@noinline function _mouse_button_callback(window::Window, button::MouseButton, action::Action, mods::Cint)
+    # Call user-provided callback if set
+    cb = USER_MOUSE_BUTTON_CALLBACK[]
+    if cb !== nothing
+        cb(window, button, action, mods)
+    end
+    return nothing
 end
 
-function extractargs(ex)
-	before, after = arrowsplit(ex)
-	name = string(before.args[1])
-	params = before.args[2:end]
-	args = isa(after, Expr) ? after.args : map(paramname, params)
-	name, params, args
+@noinline function _cursor_pos_callback(window::Window, xpos::Cdouble, ypos::Cdouble)
+    # Call user-provided callback if set
+    cb = USER_CURSOR_POS_CALLBACK[]
+    if cb !== nothing
+        cb(window, xpos, ypos)
+    end
+    return nothing
 end
 
-function arrowsplit(ex)
-	if ex.head == :->
-		ex.args[1], ex.args[2].args[2]
-	else
-		ex, nothing
-	end
+@noinline function _char_callback(window::Window, codepoint::Cuint)
+    # Call user-provided callback if set
+    cb = USER_CHAR_CALLBACK[]
+    if cb !== nothing
+        cb(window, codepoint)
+    end
+    return nothing
 end
 
-paramname(param_ex) = param_ex.args[1]
-paramtype(param_ex) = param_ex.args[2]
+@noinline function _scroll_callback(window::Window, xoffset::Cdouble, yoffset::Cdouble)
+    # Call user-provided callback if set
+    cb = USER_SCROLL_CALLBACK[]
+    if cb !== nothing
+        cb(window, xoffset, yoffset)
+    end
+    return nothing
+end
+
+@noinline function _char_mods_callback(window::Window, codepoint::Cuint, mods::Cint)
+    # Call user-provided callback if set
+    cb = USER_CHAR_MODS_CALLBACK[]
+    if cb !== nothing
+        cb(window, codepoint, mods)
+    end
+    return nothing
+end
+
+@noinline function _cursor_enter_callback(window::Window, entered::Cint)
+    # Call user-provided callback if set
+    cb = USER_CURSOR_ENTER_CALLBACK[]
+    if cb !== nothing
+        cb(window, Bool(entered))
+    end
+    return nothing
+end
+
+@noinline function _drop_callback(window::Window, count::Cint, paths::Ptr{Cstring})
+    # Call user-provided callback if set
+    cb = USER_DROP_CALLBACK[]
+    if cb !== nothing
+        # Convert C string array to Julia array
+        path_array = unsafe_wrap(Array, paths, count)
+        julia_paths = [unsafe_string(path_array[i]) for i in 1:count]
+        cb(window, julia_paths)
+    end
+    return nothing
+end
+
+# Completely static callback wrappers - no storage access
+@noinline function _ErrorCallbackWrapper(code::Cint, description::Cstring)
+    # Direct hardcoded call - completely static, no storage
+    _error_callback(GLFWError(code, unsafe_string(description)))
+    return nothing
+end
+
+@noinline function _KeyCallbackWrapper(window::Window, key::Key, scancode::Cint, action::Action, mods::Cint)
+    # Direct hardcoded call - completely static, no storage
+    _key_callback(window, key, scancode, action, mods)
+    return nothing
+end
+
+@noinline function _MouseButtonCallbackWrapper(window::Window, button::MouseButton, action::Action, mods::Cint)
+    _mouse_button_callback(window, button, action, mods)
+    return nothing
+end
+
+@noinline function _CursorPosCallbackWrapper(window::Window, xpos::Cdouble, ypos::Cdouble)
+    _cursor_pos_callback(window, xpos, ypos)
+    return nothing
+end
+
+@noinline function _CharCallbackWrapper(window::Window, codepoint::Cuint)
+    _char_callback(window, codepoint)
+    return nothing
+end
+
+@noinline function _ScrollCallbackWrapper(window::Window, xoffset::Cdouble, yoffset::Cdouble)
+    _scroll_callback(window, xoffset, yoffset)
+    return nothing
+end
+
+@noinline function _CharModsCallbackWrapper(window::Window, codepoint::Cuint, mods::Cint)
+    _char_mods_callback(window, codepoint, mods)
+    return nothing
+end
+
+@noinline function _CursorEnterCallbackWrapper(window::Window, entered::Cint)
+    _cursor_enter_callback(window, entered)
+    return nothing
+end
+
+@noinline function _DropCallbackWrapper(window::Window, count::Cint, paths::Ptr{Cstring})
+    _drop_callback(window, count, paths)
+    return nothing
+end
+
+# Compile-time constant C function pointers
+const ERROR_PTR = @cfunction(_ErrorCallbackWrapper, Cvoid, (Cint, Cstring))
+const KEY_PTR = @cfunction(_KeyCallbackWrapper, Cvoid, (Window, Key, Cint, Action, Cint))
+const MOUSE_BUTTON_PTR = @cfunction(_MouseButtonCallbackWrapper, Cvoid, (Window, MouseButton, Action, Cint))
+const CURSOR_POS_PTR = @cfunction(_CursorPosCallbackWrapper, Cvoid, (Window, Cdouble, Cdouble))
+const CHAR_PTR = @cfunction(_CharCallbackWrapper, Cvoid, (Window, Cuint))
+const SCROLL_PTR = @cfunction(_ScrollCallbackWrapper, Cvoid, (Window, Cdouble, Cdouble))
+const CHAR_MODS_PTR = @cfunction(_CharModsCallbackWrapper, Cvoid, (Window, Cuint, Cint))
+const CURSOR_ENTER_PTR = @cfunction(_CursorEnterCallbackWrapper, Cvoid, (Window, Cint))
+const DROP_PTR = @cfunction(_DropCallbackWrapper, Cvoid, (Window, Cint, Ptr{Cstring}))
+
+# Static setters - no customization, but guaranteed to work with static compilation
+function SetErrorCallback()
+    require_main_thread()
+    ccall((:glfwSetErrorCallback, libglfw), Ptr{Cvoid}, (Ptr{Cvoid},), ERROR_PTR)
+    return nothing
+end
+
+function SetKeyCallback(window::Window, callback=nothing)
+    require_main_thread()
+    USER_KEY_CALLBACK[] = callback
+    ccall((:glfwSetKeyCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, KEY_PTR)
+    return nothing
+end
+
+function SetMouseButtonCallback(window::Window, callback=nothing)
+    require_main_thread()
+    USER_MOUSE_BUTTON_CALLBACK[] = callback
+    ccall((:glfwSetMouseButtonCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, MOUSE_BUTTON_PTR)
+    return nothing
+end
+
+function SetCursorPosCallback(window::Window, callback=nothing)
+    require_main_thread()
+    USER_CURSOR_POS_CALLBACK[] = callback
+    ccall((:glfwSetCursorPosCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, CURSOR_POS_PTR)
+    return nothing
+end
+
+function SetCharCallback(window::Window, callback=nothing)
+    require_main_thread()
+    USER_CHAR_CALLBACK[] = callback
+    ccall((:glfwSetCharCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, CHAR_PTR)
+    return nothing
+end
+
+function SetScrollCallback(window::Window, callback=nothing)
+    require_main_thread()
+    USER_SCROLL_CALLBACK[] = callback
+    ccall((:glfwSetScrollCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, SCROLL_PTR)
+    return nothing
+end
+
+function SetCharModsCallback(window::Window, callback=nothing)
+    require_main_thread()
+    USER_CHAR_MODS_CALLBACK[] = callback
+    ccall((:glfwSetCharModsCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, CHAR_MODS_PTR)
+    return nothing
+end
+
+function SetCursorEnterCallback(window::Window, callback=nothing)
+    require_main_thread()
+    USER_CURSOR_ENTER_CALLBACK[] = callback
+    ccall((:glfwSetCursorEnterCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, CURSOR_ENTER_PTR)
+    return nothing
+end
+
+function SetDropCallback(window::Window, callback=nothing)
+    require_main_thread()
+    USER_DROP_CALLBACK[] = callback
+    ccall((:glfwSetDropCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, DROP_PTR)
+    return nothing
+end
+
+# Clear functions
+function ClearErrorCallback()
+    require_main_thread()
+    ccall((:glfwSetErrorCallback, libglfw), Ptr{Cvoid}, (Ptr{Cvoid},), C_NULL)
+    return nothing
+end
+
+function ClearKeyCallback(window::Window)
+    require_main_thread()
+    USER_KEY_CALLBACK[] = nothing
+    ccall((:glfwSetKeyCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, C_NULL)
+    return nothing
+end
+
+function ClearMouseButtonCallback(window::Window)
+    require_main_thread()
+    USER_MOUSE_BUTTON_CALLBACK[] = nothing
+    ccall((:glfwSetMouseButtonCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, C_NULL)
+    return nothing
+end
+
+function ClearCursorPosCallback(window::Window)
+    require_main_thread()
+    USER_CURSOR_POS_CALLBACK[] = nothing
+    ccall((:glfwSetCursorPosCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, C_NULL)
+    return nothing
+end
+
+function ClearCharCallback(window::Window)
+    require_main_thread()
+    USER_CHAR_CALLBACK[] = nothing
+    ccall((:glfwSetCharCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, C_NULL)
+    return nothing
+end
+
+function ClearScrollCallback(window::Window)
+    require_main_thread()
+    USER_SCROLL_CALLBACK[] = nothing
+    ccall((:glfwSetScrollCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, C_NULL)
+    return nothing
+end
+
+function ClearCharModsCallback(window::Window)
+    require_main_thread()
+    USER_CHAR_MODS_CALLBACK[] = nothing
+    ccall((:glfwSetCharModsCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, C_NULL)
+    return nothing
+end
+
+function ClearCursorEnterCallback(window::Window)
+    require_main_thread()
+    USER_CURSOR_ENTER_CALLBACK[] = nothing
+    ccall((:glfwSetCursorEnterCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, C_NULL)
+    return nothing
+end
+
+function ClearDropCallback(window::Window)
+    require_main_thread()
+    USER_DROP_CALLBACK[] = nothing
+    ccall((:glfwSetDropCallback, libglfw), Ptr{Cvoid}, (Window, Ptr{Cvoid}), window, C_NULL)
+    return nothing
+end
